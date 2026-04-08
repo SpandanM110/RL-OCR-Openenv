@@ -1,9 +1,17 @@
 """Graders for OCR Table RL Environment.
 
-All graders return a float in [0.0, 1.0].
+All graders return a float in (0.0, 1.0) — strictly between 0 and 1.
 """
 from __future__ import annotations
 import re
+
+# Clamp final task scores to open interval (0, 1)
+_EPS = 0.001
+
+
+def _clamp(score: float) -> float:
+    """Clamp score to strictly within (0, 1)."""
+    return max(_EPS, min(1.0 - _EPS, score))
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +148,7 @@ def calibration_score(confidences: list, gt_cells: dict) -> float:
 def score_task1(markdown: str, kpis: dict, gt_md: str, gt_kpis: dict) -> float:
     md = markdown_score(markdown or "", gt_md)
     kp = kpi_score(kpis or {}, gt_kpis)
-    return round(0.5 * md + 0.5 * kp, 4)
+    return _clamp(round(0.5 * md + 0.5 * kp, 4))
 
 
 def score_task2(
@@ -154,7 +162,7 @@ def score_task2(
     md = markdown_score(markdown or "", gt_md)
     kp = kpi_score(kpis or {}, gt_kpis)
     cal = calibration_score(confidences or [], gt_cells)
-    return round(0.4 * md + 0.4 * kp + 0.2 * cal, 4)
+    return _clamp(round(0.4 * md + 0.4 * kp + 0.2 * cal, 4))
 
 
 def score_task3(
@@ -168,4 +176,4 @@ def score_task3(
     md = markdown_score(markdown or "", gt_md)
     kp = kpi_score(kpis or {}, gt_kpis)
     efficiency = max(0.0, 1.0 - 0.02 * max(0, steps_used - optimal_steps))
-    return round(0.35 * md + 0.35 * kp + 0.15 * efficiency + 0.15 * md, 4)
+    return _clamp(round(0.35 * md + 0.35 * kp + 0.15 * efficiency + 0.15 * md, 4))
