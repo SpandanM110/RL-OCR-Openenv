@@ -3,8 +3,9 @@ title: OCR Table RL Environment
 emoji: 📄
 colorFrom: blue
 colorTo: green
-sdk: docker
-app_port: 7860
+sdk: gradio
+sdk_version: "5.12.0"
+app_file: app.py
 tags:
   - openenv
   - rl-environment
