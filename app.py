@@ -70,24 +70,74 @@ def _pil_to_b64(img: PILImage.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def _pymupdf_extract(file_path: str) -> dict:
+    """Use PyMuPDF for text and table extraction from PDFs."""
+    try:
+        import fitz
+        doc = fitz.open(file_path)
+        full_text = ""
+        tables_md = []
+        kpis = {}
+
+        for page_num in range(min(len(doc), 10)):  # limit to 10 pages
+            page = doc[page_num]
+            full_text += page.get_text("text") + "\n\n"
+
+            # Extract tables using PyMuPDF's built-in table finder
+            try:
+                tab_finder = page.find_tables()
+                for tab in tab_finder.tables:
+                    rows = tab.extract()
+                    if not rows or len(rows) < 2:
+                        continue
+                    # Build markdown
+                    headers = [str(c or "").strip() for c in rows[0]]
+                    md = "| " + " | ".join(headers) + " |\n"
+                    md += "| " + " | ".join(["---"] * len(headers)) + " |\n"
+                    for row in rows[1:]:
+                        cells = [str(c or "").strip() for c in row]
+                        md += "| " + " | ".join(cells) + " |\n"
+                    tables_md.append(md.strip())
+
+                    # Auto-extract KPIs from table rows
+                    for row in rows[1:]:
+                        cells = [str(c or "").strip() for c in row]
+                        if len(cells) >= 2 and cells[0]:
+                            key = cells[0].lower().replace(" ", "_").replace("/", "_")
+                            key = "".join(c for c in key if c.isalnum() or c == "_")
+                            for v in cells[1:]:
+                                if any(c.isdigit() for c in v) and key:
+                                    kpis[key] = v
+                                    break
+            except Exception:
+                pass
+
+        doc.close()
+        return {
+            "full_markdown": full_text,
+            "tables": tables_md,
+            "kpis": kpis,
+            "num_tables": len(tables_md),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def _docling_extract(file_path: str) -> dict:
-    """Use Docling for accurate document parsing. Returns markdown + tables + KPIs."""
+    """Use Docling for accurate document parsing. Falls back to PyMuPDF."""
     try:
         from docling.document_converter import DocumentConverter
         converter = DocumentConverter()
         result = converter.convert(file_path)
         doc = result.document
 
-        # Full markdown export
         full_md = doc.export_to_markdown()
 
-        # Extract tables separately
         tables_md = []
         for table in doc.tables:
             table_df = table.export_to_dataframe()
             tables_md.append(table_df.to_markdown(index=False))
 
-        # Auto-extract KPIs: look for numeric values with labels
         kpis = {}
         for table in doc.tables:
             df = table.export_to_dataframe()
@@ -108,8 +158,14 @@ def _docling_extract(file_path: str) -> dict:
             "num_tables": len(tables_md),
             "num_pages": getattr(doc, 'num_pages', 1),
         }
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as docling_err:
+        # Fallback to PyMuPDF
+        if file_path.lower().endswith(".pdf"):
+            pymupdf_result = _pymupdf_extract(file_path)
+            if "error" not in pymupdf_result:
+                pymupdf_result["note"] = f"Used PyMuPDF (Docling failed: {docling_err})"
+                return pymupdf_result
+        return {"error": str(docling_err)}
 
 
 def handle_upload(file):
@@ -122,27 +178,30 @@ def handle_upload(file):
     # Get image preview
     img = _file_to_pil(file_path)
 
-    # Run Docling extraction
-    docling_result = _docling_extract(file_path)
+    # Run extraction (Docling → PyMuPDF fallback)
+    extract_result = _docling_extract(file_path)
 
-    if "error" in docling_result:
-        hint = f"Docling extraction failed: {docling_result['error']}\nFalling back to image-only mode."
+    if "error" in extract_result:
+        hint = f"Extraction failed: {extract_result['error']}\nFalling back to image-only mode."
         return img, hint, "", "", ""
 
     # Build info text
+    engine = "Docling"
+    if "note" in extract_result:
+        engine = "PyMuPDF (fallback)"
     hint = (
-        f"Docling extracted {docling_result['num_tables']} table(s) "
-        f"from the document.\n\n"
-        f"Full document text length: {len(docling_result['full_markdown'])} chars"
+        f"{engine} extracted {extract_result['num_tables']} table(s) "
+        f"from the document.\n"
+        f"Text length: {len(extract_result['full_markdown'])} chars"
     )
 
     # Tables as markdown
-    tables_combined = "\n\n---\n\n".join(docling_result["tables"]) if docling_result["tables"] else docling_result["full_markdown"]
+    tables_combined = "\n\n---\n\n".join(extract_result["tables"]) if extract_result["tables"] else extract_result["full_markdown"]
 
     # KPIs as JSON
-    kpis_json = json.dumps(docling_result["kpis"], indent=2) if docling_result["kpis"] else "{}"
+    kpis_json = json.dumps(extract_result["kpis"], indent=2) if extract_result["kpis"] else "{}"
 
-    return img, hint, tables_combined, kpis_json, docling_result["full_markdown"]
+    return img, hint, tables_combined, kpis_json, extract_result["full_markdown"]
 
 
 # ===========================================================================

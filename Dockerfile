@@ -12,12 +12,10 @@ RUN apt-get update && \
         fontconfig \
         fonts-dejavu-core \
         libxcb1 \
-        libxcb-shm0 \
-        libxcb-render0 \
         libx11-6 \
         libxext6 \
         libxrender1 \
-        libgl1-mesa-glx \
+        libgl1 \
         libglib2.0-0 \
         libsm6 \
         poppler-utils && \
