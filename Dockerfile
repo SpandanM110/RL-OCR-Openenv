@@ -5,12 +5,22 @@ ENV PORT=7860
 
 WORKDIR /app
 
-# System deps
+# System deps (Docling needs libxcb, libGL, and other libs for PDF/image processing)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl \
         fontconfig \
-        fonts-dejavu-core && \
+        fonts-dejavu-core \
+        libxcb1 \
+        libxcb-shm0 \
+        libxcb-render0 \
+        libx11-6 \
+        libxext6 \
+        libxrender1 \
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        libsm6 \
+        poppler-utils && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
