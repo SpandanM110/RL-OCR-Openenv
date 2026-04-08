@@ -1,0 +1,22 @@
+spec_version: 1
+name: ocr-table-rl
+type: space
+runtime: fastapi
+app: server.app:app
+port: 7860
+tags:
+  - openenv
+  - ocr
+  - table-extraction
+  - rl-environment
+description: >
+  RL environment for structured document table extraction.
+  Agents extract complex tables into Markdown + JSON KPIs
+  from synthetic document images with increasing noise levels.
+tasks:
+  - id: clean_table
+    difficulty: easy
+  - id: noisy_financial
+    difficulty: medium
+  - id: degraded_report
+    difficulty: hard
