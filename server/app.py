@@ -9,6 +9,7 @@ import gradio as gr
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from typing import Optional
 
@@ -60,6 +61,11 @@ class StepResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/ui")
+
 
 @app.get("/health")
 async def health():
