@@ -1,9 +1,11 @@
-"""FastAPI server for OCR Table RL Environment."""
+"""FastAPI server for OCR Table RL Environment (with Gradio UI mounted at /ui)."""
 from __future__ import annotations
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+import gradio as gr
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -97,10 +99,28 @@ async def get_state():
 
 
 # ---------------------------------------------------------------------------
+# Mount Gradio UI at /ui
+# ---------------------------------------------------------------------------
+
+try:
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "gradio_app",
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "app.py"),
+    )
+    gradio_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gradio_module)
+    demo = gradio_module.demo
+    app = gr.mount_gradio_app(app, demo, path="/ui")
+except Exception as e:
+    print(f"Warning: Could not mount Gradio UI: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 7860))
     uvicorn.run("server.app:app", host="0.0.0.0", port=port, reload=False)
