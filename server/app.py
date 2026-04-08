@@ -132,7 +132,12 @@ except Exception as e:
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def main():
+    """Main entry point for the OpenEnv server."""
     import uvicorn
     port = int(os.environ.get("PORT", 7860))
-    uvicorn.run("server.app:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=port, reload=False)
+
+
+if __name__ == "__main__":
+    main()
