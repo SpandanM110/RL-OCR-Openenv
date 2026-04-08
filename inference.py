@@ -8,12 +8,13 @@ Environment variables:
     API_BASE_URL  - LLM API endpoint (default: https://api-inference.huggingface.co/v1)
     MODEL_NAME    - Model identifier  (default: Qwen/Qwen2.5-72B-Instruct)
     HF_TOKEN      - API key (required, no default)
-    ENV_URL       - Environment server URL (default: http://localhost:8000)
+    ENV_URL       - Environment server URL (default: http://localhost:7860)
 """
 from __future__ import annotations
 import os
 import json
 import sys
+import time
 import requests
 from openai import OpenAI
 
@@ -24,13 +25,14 @@ from openai import OpenAI
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN")
-ENV_URL = os.getenv("ENV_URL", "http://localhost:8000")
+ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
 
 # Optional - if you use from_docker_image():
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
 if HF_TOKEN is None:
-    raise ValueError("HF_TOKEN environment variable is required")
+    print("WARNING: HF_TOKEN not set, using placeholder", file=sys.stderr)
+    HF_TOKEN = "hf_placeholder"
 
 # All LLM calls use the OpenAI client configured via these variables
 client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
@@ -108,6 +110,22 @@ def call_agent(obs: dict, history: list, step_num: int, task: str) -> dict:
         return {"action_type": "finalize"}
 
 
+def wait_for_env(url: str, timeout: int = 60):
+    """Wait for the environment server to be reachable."""
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            resp = requests.get(f"{url}/health", timeout=5)
+            if resp.status_code == 200:
+                return True
+        except requests.ConnectionError:
+            pass
+        except Exception:
+            pass
+        time.sleep(2)
+    return False
+
+
 def env_reset(task: str) -> dict:
     resp = requests.post(f"{ENV_URL}/reset", json={"task": task}, timeout=30)
     resp.raise_for_status()
@@ -168,6 +186,11 @@ def run_task(task: str) -> tuple[bool, int, list[float]]:
 
 
 def main():
+    # Wait for environment server to be ready
+    print(f"Waiting for environment at {ENV_URL} ...", file=sys.stderr)
+    if not wait_for_env(ENV_URL, timeout=90):
+        print(f"WARNING: Environment at {ENV_URL} not reachable, proceeding anyway", file=sys.stderr)
+
     all_success = True
     for task in TASKS:
         try:
