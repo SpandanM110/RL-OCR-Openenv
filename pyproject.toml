@@ -1,0 +1,30 @@
+[project]
+name = "ocr-table-rl"
+version = "1.0.0"
+description = "OpenEnv-compatible RL environment for structured document table extraction"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "SpandanM110"},
+]
+keywords = ["openenv", "reinforcement-learning", "ocr", "table-extraction"]
+
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+    "pydantic>=2.5.0",
+    "openai>=1.0.0",
+    "requests>=2.31.0",
+    "Pillow>=10.0.0",
+    "python-dotenv>=1.0.0",
+    "gradio>=4.0.0",
+    "PyMuPDF>=1.24.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["env*", "server*"]
