@@ -70,24 +70,79 @@ def _pil_to_b64(img: PILImage.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def _docling_extract(file_path: str) -> dict:
+    """Use Docling for accurate document parsing. Returns markdown + tables + KPIs."""
+    try:
+        from docling.document_converter import DocumentConverter
+        converter = DocumentConverter()
+        result = converter.convert(file_path)
+        doc = result.document
+
+        # Full markdown export
+        full_md = doc.export_to_markdown()
+
+        # Extract tables separately
+        tables_md = []
+        for table in doc.tables:
+            table_df = table.export_to_dataframe()
+            tables_md.append(table_df.to_markdown(index=False))
+
+        # Auto-extract KPIs: look for numeric values with labels
+        kpis = {}
+        for table in doc.tables:
+            df = table.export_to_dataframe()
+            for _, row in df.iterrows():
+                vals = list(row.values)
+                if len(vals) >= 2:
+                    key = str(vals[0]).strip().lower().replace(" ", "_").replace("/", "_")
+                    for v in vals[1:]:
+                        v_str = str(v).strip()
+                        if any(c.isdigit() for c in v_str) and key:
+                            kpis[key] = v_str
+                            break
+
+        return {
+            "full_markdown": full_md,
+            "tables": tables_md,
+            "kpis": kpis,
+            "num_tables": len(tables_md),
+            "num_pages": getattr(doc, 'num_pages', 1),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def handle_upload(file):
-    """Process uploaded PDF/image and return preview + extracted text hint."""
+    """Process uploaded PDF/image via Docling + fallback to PyMuPDF for preview."""
     if file is None:
-        return None, "(no file uploaded)", ""
+        return None, "(no file uploaded)", "", "", ""
 
     file_path = file if isinstance(file, str) else file.name
-    img = _file_to_pil(file_path)
-    if img is None:
-        return None, "Error: Could not process this file. Install PyMuPDF for PDF support.", ""
 
-    # Generate a noisy text hint (simulate what an OCR would produce)
-    b64 = _pil_to_b64(img)
+    # Get image preview
+    img = _file_to_pil(file_path)
+
+    # Run Docling extraction
+    docling_result = _docling_extract(file_path)
+
+    if "error" in docling_result:
+        hint = f"Docling extraction failed: {docling_result['error']}\nFalling back to image-only mode."
+        return img, hint, "", "", ""
+
+    # Build info text
     hint = (
-        "Uploaded document detected. The image has been loaded.\n"
-        "Use the RL environment tasks for graded evaluation, "
-        "or paste extracted text/markdown below to test grading."
+        f"Docling extracted {docling_result['num_tables']} table(s) "
+        f"from the document.\n\n"
+        f"Full document text length: {len(docling_result['full_markdown'])} chars"
     )
-    return img, hint, b64
+
+    # Tables as markdown
+    tables_combined = "\n\n---\n\n".join(docling_result["tables"]) if docling_result["tables"] else docling_result["full_markdown"]
+
+    # KPIs as JSON
+    kpis_json = json.dumps(docling_result["kpis"], indent=2) if docling_result["kpis"] else "{}"
+
+    return img, hint, tables_combined, kpis_json, docling_result["full_markdown"]
 
 
 # ===========================================================================
@@ -204,8 +259,8 @@ with gr.Blocks(
             gr.Markdown(
                 "### Upload a PDF or Image\n"
                 "Upload your own document containing tables. "
-                "The image will be displayed and you can use the RL environment "
-                "to practice extraction, or manually test markdown/KPI grading."
+                "**Docling** (IBM's document AI) will automatically extract tables, "
+                "text, and KPIs with high accuracy.\n"
             )
             with gr.Row():
                 with gr.Column(scale=1):
@@ -214,39 +269,45 @@ with gr.Blocks(
                         file_types=[".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"],
                         type="filepath",
                     )
-                    upload_btn = gr.Button("Process Document", variant="primary")
-                    upload_b64_state = gr.State("")
+                    upload_btn = gr.Button("Extract with Docling", variant="primary")
 
-                    gr.Markdown("### Test Grading")
-                    gr.Markdown(
-                        "Paste your extracted markdown table and KPIs below "
-                        "to see how the grader scores them against ground truth."
-                    )
-                    upload_md = gr.Textbox(
-                        label="Your Markdown Table",
-                        placeholder="| Header1 | Header2 |\n|---|---|\n| val1 | val2 |",
-                        lines=8,
-                    )
-                    upload_kpis = gr.Textbox(
-                        label="Your KPIs (JSON)",
-                        placeholder='{"revenue": "$1,000", "growth": "15%"}',
-                        lines=4,
-                    )
-                    grade_btn = gr.Button("Grade Extraction", variant="secondary")
-                    grade_result = gr.Markdown("")
-
-                with gr.Column(scale=2):
                     gr.Markdown("### Document Preview")
                     upload_img_out = gr.Image(
-                        label="Uploaded Document", type="pil", height=450
+                        label="Uploaded Document", type="pil", height=350
                     )
                     upload_hint = gr.Textbox(
-                        label="Document Info", lines=4, interactive=False
+                        label="Extraction Info", lines=3, interactive=False
                     )
+
+                with gr.Column(scale=2):
+                    gr.Markdown("### Docling Extracted Tables (Markdown)")
+                    upload_md = gr.Textbox(
+                        label="Extracted Markdown Tables",
+                        lines=12,
+                        interactive=True,
+                    )
+                    gr.Markdown("### Auto-Detected KPIs (JSON)")
+                    upload_kpis = gr.Textbox(
+                        label="Extracted KPIs",
+                        lines=6,
+                        interactive=True,
+                    )
+                    with gr.Accordion("Full Document Markdown", open=False):
+                        full_md_out = gr.Textbox(
+                            label="Full Docling Output",
+                            lines=15,
+                            interactive=False,
+                        )
+
+            with gr.Row():
+                gr.Markdown("### Test Grading")
+            with gr.Row():
+                grade_btn = gr.Button("Grade Against Task 1 Ground Truth", variant="secondary")
+                grade_result = gr.Markdown("")
 
             upload_btn.click(
                 handle_upload, [upload_input],
-                [upload_img_out, upload_hint, upload_b64_state],
+                [upload_img_out, upload_hint, upload_md, upload_kpis, full_md_out],
             )
 
             def grade_extraction(md_text, kpis_text):
