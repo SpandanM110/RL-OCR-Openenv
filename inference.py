@@ -5,10 +5,10 @@ Usage:
     HF_TOKEN=<your_token> python inference.py
 
 Environment variables:
-    API_BASE_URL  - LLM API endpoint (default: https://api-inference.huggingface.co/v1)
-    MODEL_NAME    - Model identifier  (default: Qwen/Qwen2.5-72B-Instruct)
-    HF_TOKEN      - API key (required, no default)
-    ENV_URL       - Environment server URL (default: http://localhost:7860)
+    API_BASE_URL   - LLM API endpoint (default: https://api-inference.huggingface.co/v1)
+    MODEL_NAME     - Model identifier  (default: Qwen/Qwen2.5-72B-Instruct)
+    HF_TOKEN       - API key (required for LLM calls)
+    ENV_BASE_URL   - Environment server URL. If not set, runs environment in-process.
 """
 from __future__ import annotations
 import os
@@ -16,33 +16,69 @@ import json
 import sys
 import time
 import requests
-from openai import OpenAI
 
 # ---------------------------------------------------------------------------
-# Configuration (strictly per hackathon spec)
+# Configuration
 # ---------------------------------------------------------------------------
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-HF_TOKEN = os.getenv("HF_TOKEN")
-ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+ENV_BASE_URL = os.getenv("ENV_BASE_URL", "")
 
-# Optional - if you use from_docker_image():
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
-
-if HF_TOKEN is None:
-    print("WARNING: HF_TOKEN not set, using placeholder", file=sys.stderr)
-    HF_TOKEN = "hf_placeholder"
-
-# All LLM calls use the OpenAI client configured via these variables
-client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
 TASKS = ["clean_table", "noisy_financial", "degraded_report"]
 MAX_STEPS = 15
 BENCHMARK_NAME = "ocr-table-rl"
 
 # ---------------------------------------------------------------------------
-# Agent logic
+# Environment access — in-process or remote
+# ---------------------------------------------------------------------------
+
+_local_env = None
+
+
+def _get_local_env():
+    """Lazy-init a local in-process environment."""
+    global _local_env
+    if _local_env is None:
+        from env.environment import OCREnvironment
+        _local_env = OCREnvironment()
+    return _local_env
+
+
+def env_reset(task: str) -> dict:
+    if ENV_BASE_URL:
+        resp = requests.post(f"{ENV_BASE_URL}/reset", json={"task": task}, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+    else:
+        env = _get_local_env()
+        obs = env.reset(task=task)
+        return obs.model_dump()
+
+
+def env_step(action: dict) -> dict:
+    if ENV_BASE_URL:
+        resp = requests.post(f"{ENV_BASE_URL}/step", json=action, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+    else:
+        from env.models import OCRAction
+        env = _get_local_env()
+        act = OCRAction(**action)
+        obs, reward, done, info = env.step(act)
+        return {
+            "observation": obs.model_dump(),
+            "reward": reward,
+            "done": done,
+            "info": info,
+        }
+
+
+# ---------------------------------------------------------------------------
+# LLM Agent
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are an expert OCR agent that extracts structured tables from documents.
@@ -87,8 +123,15 @@ def build_user_message(obs: dict, step_num: int, task: str) -> str:
 
 def call_agent(obs: dict, history: list, step_num: int, task: str) -> dict:
     """Call LLM via OpenAI client and return a parsed action dict."""
-    history.append({"role": "user", "content": build_user_message(obs, step_num, task)})
+    if not HF_TOKEN:
+        # No LLM available — use a simple heuristic fallback
+        return _heuristic_action(obs, step_num, task)
+
     try:
+        from openai import OpenAI
+        client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+
+        history.append({"role": "user", "content": build_user_message(obs, step_num, task)})
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
@@ -106,36 +149,60 @@ def call_agent(obs: dict, history: list, step_num: int, task: str) -> dict:
 
         action = json.loads(content)
         return action
-    except Exception:
+    except Exception as e:
+        print(f"LLM call failed: {e}", file=sys.stderr)
         return {"action_type": "finalize"}
 
 
-def wait_for_env(url: str, timeout: int = 60):
-    """Wait for the environment server to be reachable."""
-    start = time.time()
-    while time.time() - start < timeout:
-        try:
-            resp = requests.get(f"{url}/health", timeout=5)
-            if resp.status_code == 200:
-                return True
-        except requests.ConnectionError:
-            pass
-        except Exception:
-            pass
-        time.sleep(2)
-    return False
+def _heuristic_action(obs: dict, step_num: int, task: str) -> dict:
+    """Simple heuristic agent when no LLM is available."""
+    text_hint = obs.get("text_hint", "")
 
+    if step_num == 1:
+        # First step: try to extract markdown from the text hint
+        # Parse the hint as a rough markdown table
+        lines = text_hint.strip().splitlines()
+        md_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("("):
+                # Convert to table row
+                cells = [c.strip() for c in stripped.split("  ") if c.strip()]
+                if cells:
+                    md_lines.append("| " + " | ".join(cells) + " |")
 
-def env_reset(task: str) -> dict:
-    resp = requests.post(f"{ENV_URL}/reset", json={"task": task}, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+        if len(md_lines) >= 2:
+            # Insert separator after header
+            ncols = md_lines[0].count("|") - 1
+            sep = "| " + " | ".join(["---"] * max(ncols, 1)) + " |"
+            md = md_lines[0] + "\n" + sep + "\n" + "\n".join(md_lines[1:])
+        else:
+            md = text_hint
 
+        return {"action_type": "extract_table_md", "markdown": md}
 
-def env_step(action: dict) -> dict:
-    resp = requests.post(f"{ENV_URL}/step", json=action, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+    elif step_num == 2:
+        # Second step: extract KPIs from the hint
+        kpis = {}
+        lines = text_hint.strip().splitlines()
+        for line in lines:
+            parts = line.strip().split("  ")
+            parts = [p.strip() for p in parts if p.strip()]
+            if len(parts) >= 2:
+                key = parts[0].lower().replace(" ", "_").replace("/", "_")
+                key = "".join(c for c in key if c.isalnum() or c == "_").strip("_")
+                # Find first value that looks numeric
+                for v in parts[1:]:
+                    v_clean = v.replace(",", "").replace("$", "").replace("%", "")
+                    if any(c.isdigit() for c in v_clean):
+                        kpis[key] = v.strip()
+                        break
+        if kpis:
+            return {"action_type": "extract_kpis", "kpis": kpis}
+        return {"action_type": "extract_kpis", "kpis": {"total": "0"}}
+
+    else:
+        return {"action_type": "finalize"}
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +211,6 @@ def env_step(action: dict) -> dict:
 
 def run_task(task: str) -> tuple[bool, int, list[float]]:
     """Run one task episode. Returns (success, steps, rewards)."""
-    # [START] line — one per episode begin
     print(f"[START] task={task} env={BENCHMARK_NAME} model={MODEL_NAME}")
 
     obs = env_reset(task)
@@ -165,19 +231,16 @@ def run_task(task: str) -> tuple[bool, int, list[float]]:
         last_error = result.get("info", {}).get("error")
         error_str = last_error if last_error else "null"
 
-        # Build action string for log
         action_str = json.dumps(action, separators=(",", ":"))
         if len(action_str) > 120:
             action_str = action_str[:117] + "..."
 
-        # [STEP] line — one per step, immediately after env.step() returns
         print(
             f"[STEP] step={step_num} action={action_str} "
             f"reward={reward:.2f} done={str(done).lower()} error={error_str}"
         )
         rewards.append(reward)
 
-    # [END] line — always emitted, even on exception
     success = max(rewards) >= 0.7 if rewards else False
     reward_str = ",".join(f"{r:.2f}" for r in rewards)
     print(f"[END] success={str(success).lower()} steps={step_num} rewards={reward_str}")
@@ -186,10 +249,20 @@ def run_task(task: str) -> tuple[bool, int, list[float]]:
 
 
 def main():
-    # Wait for environment server to be ready
-    print(f"Waiting for environment at {ENV_URL} ...", file=sys.stderr)
-    if not wait_for_env(ENV_URL, timeout=90):
-        print(f"WARNING: Environment at {ENV_URL} not reachable, proceeding anyway", file=sys.stderr)
+    if ENV_BASE_URL:
+        # Wait for remote environment to be ready
+        print(f"Connecting to environment at {ENV_BASE_URL} ...", file=sys.stderr)
+        start = time.time()
+        while time.time() - start < 60:
+            try:
+                resp = requests.get(f"{ENV_BASE_URL}/health", timeout=5)
+                if resp.status_code == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(2)
+    else:
+        print("Running environment in-process (no ENV_BASE_URL set)", file=sys.stderr)
 
     all_success = True
     for task in TASKS:
@@ -198,7 +271,6 @@ def main():
             if not success:
                 all_success = False
         except Exception as e:
-            # [END] line must always be emitted, even on exception
             print(f"[END] success=false steps=0 rewards=0.00")
             print(f"ERROR running task {task}: {e}", file=sys.stderr)
             all_success = False
