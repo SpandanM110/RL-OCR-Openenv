@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import gradio as gr
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -77,13 +77,19 @@ async def list_tasks():
     return {"tasks": TASK_METADATA}
 
 
-@app.post("/reset", response_model=OCRObservation)
-async def reset(request: ResetRequest):
+@app.post("/reset")
+async def reset(request: Request):
     """Reset the environment for a given task and return the initial observation."""
     valid_tasks = {"clean_table", "noisy_financial", "degraded_report"}
-    task = request.task if request.task in valid_tasks else "clean_table"
+    task = "clean_table"
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and body.get("task") in valid_tasks:
+            task = body["task"]
+    except Exception:
+        pass
     obs = env.reset(task=task)
-    return obs
+    return obs.model_dump()
 
 
 @app.post("/step", response_model=StepResponse)

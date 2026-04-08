@@ -432,7 +432,7 @@ with gr.Blocks(
 # Standalone FastAPI app with OpenEnv API + Gradio mounted on top
 # ===========================================================================
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 
@@ -462,9 +462,15 @@ async def tasks_endpoint():
 
 
 @app.post("/reset")
-async def reset_endpoint(req: ResetRequest):
+async def reset_endpoint(request: Request):
     valid = {"clean_table", "noisy_financial", "degraded_report"}
-    t = req.task if req.task in valid else "clean_table"
+    t = "clean_table"
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and body.get("task") in valid:
+            t = body["task"]
+    except Exception:
+        pass
     return _api_env.reset(task=t).model_dump()
 
 
