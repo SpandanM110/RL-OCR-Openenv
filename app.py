@@ -390,42 +390,58 @@ with gr.Blocks(
 
 
 # ===========================================================================
-# Mount OpenEnv API on Gradio's underlying FastAPI
+# Standalone FastAPI app with OpenEnv API + Gradio mounted on top
 # ===========================================================================
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 
 class ResetRequest(BaseModel):
     task: str = "clean_table"
 
 
-_app = demo.app
+app = FastAPI(title="OCR Table RL Environment")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-@_app.get("/health")
+@app.get("/health")
 async def health():
     return {"status": "healthy", "env": "ocr-table-rl", "version": "1.0.0"}
 
 
-@_app.get("/tasks")
+@app.get("/tasks")
 async def tasks_endpoint():
     return {"tasks": TASK_METADATA}
 
 
-@_app.post("/reset")
+@app.post("/reset")
 async def reset_endpoint(req: ResetRequest):
     valid = {"clean_table", "noisy_financial", "degraded_report"}
     t = req.task if req.task in valid else "clean_table"
     return _api_env.reset(task=t).model_dump()
 
 
-@_app.post("/step")
+@app.post("/step")
 async def step_endpoint(action: OCRAction):
     obs, reward, done, info = _api_env.step(action)
     return {"observation": obs.model_dump(), "reward": reward, "done": done, "info": info}
 
 
-@_app.get("/state")
+@app.get("/state")
 async def state_endpoint():
     return _api_env.state().model_dump()
+
+
+# Mount Gradio UI at root — AFTER defining API routes so they take priority
+app = gr.mount_gradio_app(app, demo, path="/")
 
 
 # ===========================================================================
@@ -433,4 +449,5 @@ async def state_endpoint():
 # ===========================================================================
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=7860)
