@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 
 # Clamp final task scores to open interval (0, 1)
-_EPS = 0.001
+_EPS = 0.01
 
 
 def _clamp(score: float) -> float:

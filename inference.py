@@ -241,14 +241,18 @@ def run_task(task: str) -> tuple[bool, int, list[float]]:
         if len(action_str) > 120:
             action_str = action_str[:117] + "..."
 
+        # Clamp reward for done step to strictly (0, 1) for validator
+        if done:
+            reward = max(0.01, min(0.99, reward))
+
         print(
             f"[STEP] step={step_num} action={action_str} "
-            f"reward={reward:.2f} done={str(done).lower()} error={error_str}"
+            f"reward={reward:.4f} done={str(done).lower()} error={error_str}"
         )
         rewards.append(reward)
 
     success = max(rewards) >= 0.7 if rewards else False
-    reward_str = ",".join(f"{r:.2f}" for r in rewards)
+    reward_str = ",".join(f"{r:.4f}" for r in rewards)
     print(f"[END] success={str(success).lower()} steps={step_num} rewards={reward_str}")
 
     return success, step_num, rewards

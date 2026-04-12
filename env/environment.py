@@ -291,7 +291,7 @@ class OCREnvironment:
 
     def _handle_finalize(self) -> tuple[float, bool]:
         if not self._markdown and not self._kpis:
-            return 0.001, True  # strictly > 0
+            return 0.01, True  # strictly > 0
         score = self._compute_final_score()
         return round(score, 4), True
 
